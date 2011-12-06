@@ -1,0 +1,221 @@
+From 71cc899a4da740309af9eeda433237497aa515d6 Mon Sep 17 00:00:00 2001
+From: Gerd Hoffmann <kraxel@redhat.com>
+Date: Wed, 10 Mar 2010 13:46:01 -0300
+Subject: [PATCH 1/2] use VBE LFB address from PCI base address if present
+
+RH-Author: Gerd Hoffmann <kraxel@redhat.com>
+Message-id: <1268228762-18335-2-git-send-email-kraxel@redhat.com>
+Patchwork-id: 7626
+O-Subject: [RHEL-6 vgabios PATCH 1/2] use VBE LFB address from PCI base address
+	if present
+Bugzilla: 569473
+RH-Acked-by: Juan Quintela <quintela@redhat.com>
+RH-Acked-by: Zachary Amsden <zamsden@redhat.com>
+RH-Acked-by: Kevin Wolf <kwolf@redhat.com>
+
+Make vgabios lookup the lfb address in pci config space instead
+of using the hard-coded address 0xe0000000.
+
+upstream: cherry-picked from vgabios cvs.
+bugzilla: bug #569473 -- spice: Need vgabios for qxl device.
+
+---
+ clext.c   |   51 ++-------------------------------------------------
+ vbe.c     |   13 +++++++++----
+ vgabios.c |   58 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 69 insertions(+), 53 deletions(-)
+
+Signed-off-by: Eduardo Habkost <ehabkost@redhat.com>
+---
+ clext.c   |   51 ++-------------------------------------------------
+ vbe.c     |   13 +++++++++----
+ vgabios.c |   58 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 69 insertions(+), 53 deletions(-)
+
+diff --git a/clext.c b/clext.c
+index ea37ec5..6dbd689 100644
+--- a/clext.c
++++ b/clext.c
+@@ -948,7 +948,8 @@ cirrus_vesa_01h_3:
+   ;; 32-bit LFB address
+   xor ax, ax
+   stosw
+-  call cirrus_get_lfb_addr
++  mov ax, #0x1013 ;; vendor Cirrus
++  call _pci_get_lfb_addr
+   stosw
+   or ax, ax
+   jz cirrus_vesa_01h_4
+@@ -1262,54 +1263,6 @@ cgm_2:
+ cgm_3:
+   ret
+ 
+-  ; get LFB address
+-  ; out - ax:LFB address (high 16 bit)
+-  ;; NOTE - may be called in protected mode
+-cirrus_get_lfb_addr:
+-  push cx
+-  push dx
+-  push eax
+-    xor cx, cx
+-    mov dl, #0x00
+-    call cirrus_pci_read
+-    cmp ax, #0xffff
+-    jz cirrus_get_lfb_addr_5
+- cirrus_get_lfb_addr_3:
+-    mov dl, #0x00
+-    call cirrus_pci_read
+-    cmp ax, #0x1013 ;; cirrus
+-    jz cirrus_get_lfb_addr_4
+-    add cx, #0x8
+-    cmp cx, #0x200 ;; search bus #0 and #1
+-    jb cirrus_get_lfb_addr_3
+- cirrus_get_lfb_addr_5:
+-    xor dx, dx ;; no LFB
+-    jmp cirrus_get_lfb_addr_6
+- cirrus_get_lfb_addr_4:
+-    mov dl, #0x10 ;; I/O space #0
+-    call cirrus_pci_read
+-    test ax, #0xfff1
+-    jnz cirrus_get_lfb_addr_5
+-    shr eax, #16
+-    mov dx, ax ;; LFB address
+- cirrus_get_lfb_addr_6:
+-  pop eax
+-  mov ax, dx
+-  pop dx
+-  pop cx
+-  ret
+-
+-cirrus_pci_read:
+-  mov eax, #0x00800000
+-  mov ax, cx
+-  shl eax, #8
+-  mov al, dl
+-  mov dx, #0xcf8
+-  out dx, eax
+-  add dl, #4
+-  in  eax, dx
+-  ret
+-
+ ;; out - al:bytes per pixel
+ cirrus_get_bpp_bytes:
+   push dx
+diff --git a/vbe.c b/vbe.c
+index 6173ca0..3bd4d43 100644
+--- a/vbe.c
++++ b/vbe.c
+@@ -888,32 +888,37 @@ Bit16u *AX;Bit16u CX; Bit16u ES;Bit16u DI;
+         ModeInfoBlock     info;
+         ModeInfoListItem  *cur_info;
+         Boolean           using_lfb;
++        Bit16u            lfb_addr;
+ 
+ #ifdef DEBUG
+         printf("VBE vbe_biosfn_return_mode_information ES%x DI%x CX%x\n",ES,DI,CX);
+ #endif
+ 
+         using_lfb=((CX & VBE_MODE_LINEAR_FRAME_BUFFER) == VBE_MODE_LINEAR_FRAME_BUFFER);
+-        
++
+         CX = (CX & 0x1ff);
+-        
++
+         cur_info = mode_info_find_mode(CX, using_lfb, &cur_info);
+ 
+         if (cur_info != 0)
+         {
+ #ifdef DEBUG
+                 printf("VBE found mode %x\n",CX);
+-#endif        
++#endif
+                 memsetb(ss, &info, 0, sizeof(ModeInfoBlock));
+                 memcpyb(ss, &info, 0xc000, &(cur_info->info), sizeof(ModeInfoBlockCompact));
+                 if (using_lfb) {
+                   info.NumberOfBanks = 1;
+                 }
++                lfb_addr = pci_get_lfb_addr(0x1234); // experimental vendor
++                if (lfb_addr > 0) {
++                  info.PhysBasePtr = ((Bit32u)lfb_addr << 16);
++                }
+                 if (info.WinAAttributes & VBE_WINDOW_ATTRIBUTE_RELOCATABLE) {
+                   info.WinFuncPtr = 0xC0000000UL;
+                   *(Bit16u *)&(info.WinFuncPtr) = (Bit16u)(dispi_set_bank_farcall);
+                 }
+-                
++
+                 result = 0x4f;
+         }
+         else
+diff --git a/vgabios.c b/vgabios.c
+index e6fe2a0..fbc3588 100644
+--- a/vgabios.c
++++ b/vgabios.c
+@@ -3830,6 +3830,64 @@ void printf(s)
+ }
+ #endif
+ 
++ASM_START
++  ; get LFB address from PCI
++  ; in - ax: PCI device vendor
++  ; out - ax: LFB address (high 16 bit)
++  ;; NOTE - may be called in protected mode
++_pci_get_lfb_addr:
++  push bx
++  push cx
++  push dx
++  push eax
++    mov bx, ax
++    xor cx, cx
++    mov dl, #0x00
++    call pci_read_reg
++    cmp ax, #0xffff
++    jz pci_get_lfb_addr_5
++ pci_get_lfb_addr_3:
++    mov dl, #0x00
++    call pci_read_reg
++    cmp ax, bx ;; check vendor
++    jz pci_get_lfb_addr_4
++    add cx, #0x8
++    cmp cx, #0x200 ;; search bus #0 and #1
++    jb pci_get_lfb_addr_3
++ pci_get_lfb_addr_5:
++    xor dx, dx ;; no LFB
++    jmp pci_get_lfb_addr_6
++ pci_get_lfb_addr_4:
++    mov dl, #0x10 ;; I/O space #0
++    call pci_read_reg
++    test ax, #0xfff1
++    jnz pci_get_lfb_addr_5
++    shr eax, #16
++    mov dx, ax ;; LFB address
++ pci_get_lfb_addr_6:
++  pop eax
++  mov ax, dx
++  pop dx
++  pop cx
++  pop bx
++  ret
++
++  ; read PCI register
++  ; in - cx: device/function
++  ; in - dl: register
++  ; out - eax: value
++pci_read_reg:
++  mov eax, #0x00800000
++  mov ax, cx
++  shl eax, #8
++  mov al, dl
++  mov dx, #0xcf8
++  out dx, eax
++  add dl, #4
++  in  eax, dx
++  ret
++ASM_END
++
+ #ifdef VBE
+ #include "vbe.c"
+ #endif
+-- 
+1.6.3.rc4.29.g8146
+

@@ -1,0 +1,113 @@
+From a454d2293d0da1082906a75397382dcd15bb074b Mon Sep 17 00:00:00 2001
+From: Gerd Hoffmann <kraxel@redhat.com>
+Date: Wed, 10 Mar 2010 13:46:02 -0300
+Subject: [PATCH 2/2] qxl vgabios
+
+RH-Author: Gerd Hoffmann <kraxel@redhat.com>
+Message-id: <1268228762-18335-3-git-send-email-kraxel@redhat.com>
+Patchwork-id: 7627
+O-Subject: [RHEL-6 vgabios PATCH 2/2] qxl vgabios
+Bugzilla: 569473
+RH-Acked-by: Juan Quintela <quintela@redhat.com>
+RH-Acked-by: Zachary Amsden <zamsden@redhat.com>
+RH-Acked-by: Kevin Wolf <kwolf@redhat.com>
+
+Build pci vgabios for the qxl device (pci id 1b36:0100) which can be
+loaded into the ROM bar.
+
+bugzilla: #569473 -- spice: Need vgabios for qxl device
+
+---
+ Makefile  |   24 +++++++++++++++++++++++-
+ vbe.c     |    4 ++++
+ vgabios.c |    3 +++
+ 3 files changed, 30 insertions(+), 1 deletion(-)
+
+Signed-off-by: Eduardo Habkost <ehabkost@redhat.com>
+---
+ Makefile  |   24 +++++++++++++++++++++++-
+ vbe.c     |    4 ++++
+ vgabios.c |    3 +++
+ 3 files changed, 30 insertions(+), 1 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 00e8c66..d5725e1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -14,13 +14,15 @@ RELVERS = `pwd | sed "s-.*/--" | sed "s/vgabios//" | sed "s/-//"`
+ 
+ VGABIOS_DATE = "-DVGABIOS_DATE=\"$(RELDATE)\""
+ 
+-all: bios cirrus-bios
++all: bios cirrus-bios qxl-bios
+ 
+ 
+ bios: biossums vgabios.bin vgabios.debug.bin
+ 
+ cirrus-bios: vgabios-cirrus.bin vgabios-cirrus.debug.bin
+ 
++qxl-bios: vgabios-qxl.bin vgabios-qxl.debug.bin
++
+ clean:
+ 	/bin/rm -f  biossums vbetables-gen vbetables.h *.o *.s *.ld86 \
+           temp.awk.* vgabios*.orig _vgabios_* _vgabios-debug_* core vgabios*.bin vgabios*.txt $(RELEASE).bin *.bak
+@@ -77,6 +79,26 @@ vgabios-cirrus.debug.bin: vgabios.c vgabios.h vgafonts.h vgatables.h clext.c
+ 	./biossums VGABIOS-lgpl-latest.cirrus.debug.bin
+ 	ls -l VGABIOS-lgpl-latest.cirrus.debug.bin
+ 
++vgabios-qxl.bin: vgabios.c vgabios.h vgafonts.h vgatables.h vbe.h vbe.c vbetables.h
++	$(GCC) -E -P vgabios.c $(VGABIOS_VERS) -DQXL -DVBE -DPCIBIOS $(VGABIOS_DATE) > _vgabios-qxl_.c
++	$(BCC) -o vgabios-qxl.s -C-c -D__i86__ -S -0 _vgabios-qxl_.c
++	sed -e 's/^\.text//' -e 's/^\.data//' vgabios-qxl.s > _vgabios-qxl_.s
++	$(AS86) _vgabios-qxl_.s -b vgabios-qxl.bin -u -w- -g -0 -j -O -l vgabios.qxl.txt
++	rm -f _vgabios-qxl_.s _vgabios-qxl_.c vgabios-qxl.s
++	mv vgabios-qxl.bin VGABIOS-lgpl-latest.qxl.bin
++	./biossums VGABIOS-lgpl-latest.qxl.bin
++	ls -l VGABIOS-lgpl-latest.qxl.bin
++
++vgabios-qxl.debug.bin: vgabios.c vgabios.h vgafonts.h vgatables.h vbe.h vbe.c vbetables.h
++	$(GCC) -E -P vgabios.c $(VGABIOS_VERS) -DQXL -DVBE -DPCIBIOS -DDEBUG $(VGABIOS_DATE) > _vgabios-qxl-debug_.c
++	$(BCC) -o vgabios-qxl-debug.s -C-c -D__i86__ -S -0 _vgabios-qxl-debug_.c
++	sed -e 's/^\.text//' -e 's/^\.data//' vgabios-qxl-debug.s > _vgabios-qxl-debug_.s
++	$(AS86) _vgabios-qxl-debug_.s -b vgabios-qxl-debug.bin -u -w- -g -0 -j -O -l vgabios.qxl-debug.txt
++	rm -f _vgabios-qxl-debug_.s _vgabios-qxl-debug_.c vgabios-qxl-debug.s
++	mv vgabios-qxl-debug.bin VGABIOS-lgpl-latest.qxl.debug.bin
++	./biossums VGABIOS-lgpl-latest.qxl.debug.bin
++	ls -l VGABIOS-lgpl-latest.qxl.debug.bin
++
+ biossums: biossums.c
+ 	$(CC) -o biossums biossums.c
+ 
+diff --git a/vbe.c b/vbe.c
+index 3bd4d43..929987f 100644
+--- a/vbe.c
++++ b/vbe.c
+@@ -910,7 +910,11 @@ Bit16u *AX;Bit16u CX; Bit16u ES;Bit16u DI;
+                 if (using_lfb) {
+                   info.NumberOfBanks = 1;
+                 }
++#ifdef QXL
++                lfb_addr = pci_get_lfb_addr(0x1b36); // Red Hat
++#else
+                 lfb_addr = pci_get_lfb_addr(0x1234); // experimental vendor
++#endif
+                 if (lfb_addr > 0) {
+                   info.PhysBasePtr = ((Bit32u)lfb_addr << 16);
+                 }
+diff --git a/vgabios.c b/vgabios.c
+index fbc3588..a6b0004 100644
+--- a/vgabios.c
++++ b/vgabios.c
+@@ -209,6 +209,9 @@ vgabios_pci_data:
+ #ifdef CIRRUS
+ .word 0x1013
+ .word 0x00b8 // CLGD5446
++#elif QXL
++.word 0x1b36
++.word 0x0100
+ #else
+ #error "Unknown PCI vendor and device id"
+ #endif
+-- 
+1.6.3.rc4.29.g8146
+
